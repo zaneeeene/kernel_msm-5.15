@@ -138,27 +138,103 @@ jobs:
           CONFIG_TMPFS_POSIX_ACL=y
           EOF
 
-      - name: "🔧 Setup ReSukiSU"
-        if: matrix.variant == 'ksu'
+      - name: "🔧 Setup SukiSU-Ultra (Stable)"
+        if: matrix.variant == 'ksu' && github.event.inputs.ksuVariant == 'sukisu-ultra'
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
           rm -rf ./KernelSU ./drivers/kernelsu
           
-          echo "📦 Installing ResSukiSU..."
-
-          # Install ReSukiSU with SUSFS
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-      
-          echo "✔ installed successfully"
+          # Install SukiSU-Ultra with SUSFS
+          # Install SukiSU-Ultra
+          echo "📦 Installing SukiSU-Ultra..."
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
-          # Add KSU configs with SUSFS
+          # Add KSU configs
+          echo "📦 Cloning SUSFS4KSU..."
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.15
+          
+          SUSFS_KERNEL_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch"
+
+          echo "🔧 Applying SUSFS kernel patch if possible..."
+          if patch -p1 < "$SUSFS_KERNEL_PATCH"; then
+            echo "✅ SUSFS patch successfully applied"
+          else
+            echo "⚠️ SUSFS patch failed — copying files manually"
+          fi
+
+          echo "📄 Forcing SUSFS source injection..."
+          mkdir -p fs
+          cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
+          echo "✔ Copied fs/susfs.c"
+
+          mkdir -p include/linux
+          cp -f susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+          echo "✔ Copied include/linux/susfs.h"
+
+          if [ -f susfs4ksu/kernel_patches/include/linux/susfs_def.h ]; then
+            cp -f susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
+            echo "✔ Copied include/linux/susfs_def.h"
+          fi
+
+          echo "📦 Injecting SUSFS -> KernelSU integration files"
+          if [ -d "susfs4ksu/kernel_patches/KernelSU/kernel" ]; then
+            cp -rf susfs4ksu/kernel_patches/KernelSU/kernel/* KernelSU/kernel/
+            echo "✔ Copied SUSFS KernelSU integration files"
+          fi
+
+          echo "🔧 Applying SUSFS -> KernelSU patch..."
+          KSU_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          # Check if SUSFS is already integrated in SukiSU itself
+          if grep -q "susfs_init" KernelSU/kernel/ksu.c 2>/dev/null; then
+            echo "⚠️ SUSFS already integrated in SukiSU ksu.c, skipping patch"
+          else
+            if [ -f "$KSU_PATCH" ]; then
+              cd KernelSU
+              if patch -p1 --dry-run < ../$KSU_PATCH >/dev/null; then
+                patch -p1 < ../$KSU_PATCH && echo "✔ Applied KSU SUSFS patch"
+                cd ..
+              else
+                echo "⚠️ KSU SUSFS patch failed — applying manual fallback"
+                cd ..
+                sed -i '/#include <linux\/fs\.h>/a #include <linux\/susfs\.h>' KernelSU/kernel/ksu.c
+                sed -i '/ksu_core_init();/a \tsusfs_init();' KernelSU/kernel/ksu.c || sed -i '/ksu_core_init(/a \tsusfs_init();' KernelSU/kernel/ksu.c
+              fi
+            else
+              echo "⚠️ KSU patch missing — manually injecting changes"
+              sed -i '/#include <linux\/fs\.h>/a #include <linux\/susfs\.h>' KernelSU/kernel/ksu.c
+              sed -i '/ksu_core_init();/a \tsusfs_init();' KernelSU/kernel/ksu.c || sed -i '/ksu_core_init(/a \tsusfs_init();' KernelSU/kernel/ksu.c
+            fi
+          fi
+
+          rm -rf susfs4ksu
+          
+          # Add KSU configs WITH SUSFS
           CONFIG_FILE="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
           cat >> "$CONFIG_FILE" << 'EOF'
           CONFIG_KSU=y
           CONFIG_OVERLAY_FS=y
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
           EOF
           
-          echo "🎉 kernel patches fully integrated!"
+          echo "✅ Installed SukiSU-Ultra"
+          echo "✅ Installed SukiSU-Ultra with SUSFS"
 
       - name: "🔨 Build kernel"
         working-directory: ${{ env.WORK_DIR }}
